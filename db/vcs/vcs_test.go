@@ -31,12 +31,9 @@ func TestInitialization(t *testing.T) {
 	vcs.Initialize(db)
 
 	// Check if the VCS Database is initialized correctly by checking if the table records exist
-	var initchange Change
-	vcs.VCSDB.Get(&initchange, "SELECT * FROM change WHERE id = ?", 0)
-
-	if reflect.DeepEqual(initchange, Change{
+	refchange := Change{
 		ID:                  0,
-		Action:              string(Initialize),
+		Action:              "initialize",
 		RowPrimaryKeyColumn: "",
 		RowPrimaryKeyValue:  "",
 		Field:               "",
@@ -45,19 +42,23 @@ func TestInitialization(t *testing.T) {
 		ForkID:              0,
 		TableName:           "",
 		CreatedAt:           time.Now(),
-	}) {
+	}
+	var initchange Change
+	vcs.VCSDB.Get(&initchange, "SELECT * FROM change WHERE id = ?", 0)
+	initchange.CreatedAt = refchange.CreatedAt
+	if !reflect.DeepEqual(initchange, refchange) {
 		t.Error("The VCS Database is not initialized correctly")
 	}
 
-	var initfork Fork
-	vcs.VCSDB.Get(&initfork, "SELECT * FROM fork WHERE id = ?", 0)
-
-	if reflect.DeepEqual(initfork, Fork{
+	reffork := Fork{
 		ID:        0,
 		ParentID:  sql.NullInt64{Valid: false},
 		Name:      "master",
 		CreatedAt: time.Now(),
-	}) {
+	}
+	var initfork Fork
+	vcs.VCSDB.Get(&initfork, "SELECT * FROM fork WHERE id = ?", 0)
+	if !reflect.DeepEqual(initfork, reffork) {
 		t.Error("The VCS Database is not initialized correctly")
 	}
 

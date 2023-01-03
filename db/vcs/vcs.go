@@ -12,15 +12,6 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-type ActionType string // ActionType is the type of action that was performed on a row in a table
-
-const (
-	Initialize ActionType = "initialize"
-	Insert     ActionType = "insert"
-	Modify     ActionType = "modify"
-	Delete     ActionType = "delete"
-)
-
 // Row is a struct that contains the information about a row in a table that we need to pass through VCS
 type Row struct {
 	PrimaryKeyColumn string
@@ -147,6 +138,7 @@ func (vcs *VCS) Initialize(dataDB *sqlx.DB) error {
 	if err != nil {
 		return err
 	}
+	defer vcs.VCSDB.Close()
 
 	// Assign the dataDB to the VCS struct
 	vcs.DataDB = dataDB
@@ -161,14 +153,14 @@ func (vcs *VCS) Initialize(dataDB *sqlx.DB) error {
 	query := `
 	CREATE TABLE IF NOT EXISTS changes (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		action TEXT NOT NULL,
-		row_primary_key_column TEXT NOT NULL,
-		row_primary_key_value TEXT NOT NULL,
-		field TEXT NOT NULL,
-		old_data TEXT NOT NULL,
-		new_data TEXT NOT NULL,
-		fork_id INTEGER NOT NULL,
-		table_name TEXT NOT NULL,
+		action TEXT,
+		row_primary_key_column TEXT,
+		row_primary_key_value TEXT,
+		field TEXT,
+		old_data TEXT,
+		new_data TEXT,
+		fork_id INTEGER,
+		table_name TEXT,
 		created_at DATETIME NOT NULL
 	);`
 
@@ -179,7 +171,7 @@ func (vcs *VCS) Initialize(dataDB *sqlx.DB) error {
 	CREATE TABLE IF NOT EXISTS forks (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		parent_id INTEGER,
-		name TEXT NOT NULL,
+		name TEXT,
 		created_at DATETIME NOT NULL
 	);`
 	vcs.VCSDB.MustExec(query)
@@ -192,7 +184,7 @@ func (vcs *VCS) Initialize(dataDB *sqlx.DB) error {
 		// Create the initial change
 		initchange := Change{
 			ID:                  0,
-			Action:              string(Initialize),
+			Action:              string("initialize"),
 			RowPrimaryKeyColumn: "",
 			RowPrimaryKeyValue:  "",
 			Field:               "",
@@ -242,7 +234,7 @@ func (vcs *VCS) TrackChanges(data []*Row, deletedData []*Row) (Changes, error) {
 				changes = append(
 					changes,
 					&Change{
-						Action:              string(Insert),
+						Action:              "insert",
 						RowPrimaryKeyColumn: currentRow.PrimaryKeyColumn,
 						RowPrimaryKeyValue:  currentRow.PrimaryKeyValue,
 						TableName:           previousRow.TableName,
@@ -260,7 +252,7 @@ func (vcs *VCS) TrackChanges(data []*Row, deletedData []*Row) (Changes, error) {
 					changes = append(
 						changes,
 						&Change{
-							Action:              string(Modify),
+							Action:              "modify",
 							RowPrimaryKeyColumn: currentRow.PrimaryKeyColumn,
 							RowPrimaryKeyValue:  currentRow.PrimaryKeyValue,
 							TableName:           previousRow.TableName,
@@ -285,7 +277,7 @@ func (vcs *VCS) TrackChanges(data []*Row, deletedData []*Row) (Changes, error) {
 		changes = append(
 			changes,
 			&Change{
-				Action:              string(Delete),
+				Action:              "delete",
 				RowPrimaryKeyColumn: previousRow.PrimaryKeyColumn,
 				RowPrimaryKeyValue:  previousRow.PrimaryKeyValue,
 				TableName:           previousRow.TableName,
@@ -297,7 +289,7 @@ func (vcs *VCS) TrackChanges(data []*Row, deletedData []*Row) (Changes, error) {
 			changes = append(
 				changes,
 				&Change{
-					Action:              string(Modify),
+					Action:              "modify",
 					RowPrimaryKeyColumn: previousRow.PrimaryKeyColumn,
 					RowPrimaryKeyValue:  previousRow.PrimaryKeyValue,
 					TableName:           previousRow.TableName,
@@ -353,17 +345,17 @@ func (vcs *VCS) RollbackTo(changeID int, forkID int) error {
 
 	for i := len(changes) - 1; i > changeID; i-- {
 		change := changes[i]
-		if change.Action == string(Insert) {
+		if change.Action == "insert" {
 			if _, err := tx.Exec("DELETE FROM ? WHERE ? = ?", change.TableName, change.RowPrimaryKeyColumn, change.RowPrimaryKeyValue); err != nil {
 				tx.Rollback()
 				return err
 			}
-		} else if change.Action == string(Modify) {
+		} else if change.Action == "modify" {
 			if _, err := tx.Exec("UPDATE ? SET ? = ? WHERE ? = ?", change.TableName, change.Field, change.OldData, change.RowPrimaryKeyColumn, change.RowPrimaryKeyValue); err != nil {
 				tx.Rollback()
 				return err
 			}
-		} else if change.Action == string(Delete) {
+		} else if change.Action == "delete" {
 			_, err := tx.Exec("INSERT INTO ? (?) VALUES (?)", change.TableName, change.RowPrimaryKeyColumn, change.RowPrimaryKeyValue)
 			if err != nil {
 				tx.Rollback()
