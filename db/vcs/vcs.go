@@ -23,7 +23,7 @@ type Row struct {
 // Change is a struct that contains the information about a change made to a row in a table
 type Change struct {
 	ID                  uint64      `db:"id"`
-	Action              string      `db:"action"`
+	Action              string      `db:"data_action"`
 	RowPrimaryKeyColumn string      `db:"row_primary_key_column"`
 	RowPrimaryKeyValue  interface{} `db:"row_primary_key_value"`
 	Field               string      `db:"field"`
@@ -153,13 +153,13 @@ func (vcs *VCS) Initialize(dataDB *sqlx.DB) error {
 	query := `
 	CREATE TABLE IF NOT EXISTS changes (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		action TEXT,
+		data_action TEXT,
 		row_primary_key_column TEXT,
 		row_primary_key_value TEXT,
 		field TEXT,
 		old_data TEXT,
 		new_data TEXT,
-		fork_id INTEGER,
+		fork_id INTEGER REFERENCES forks (id),
 		table_name TEXT,
 		created_at DATETIME NOT NULL
 	);`
@@ -176,37 +176,13 @@ func (vcs *VCS) Initialize(dataDB *sqlx.DB) error {
 	);`
 	vcs.VCSDB.MustExec(query)
 
-	// Check if the initial change exists
-	var change Change
-	err = vcs.VCSDB.Get(&change, "SELECT * FROM changes WHERE id = 0")
-	// if no rows are returned, create the initial change
-	if err == sql.ErrNoRows {
-		// Create the initial change
-		initchange := Change{
-			ID:                  0,
-			Action:              string("initialize"),
-			RowPrimaryKeyColumn: "",
-			RowPrimaryKeyValue:  "",
-			Field:               "",
-			OldData:             "",
-			NewData:             "",
-			ForkID:              0,
-			TableName:           "",
-			CreatedAt:           time.Now(),
-		}
-
-		query = "INSERT INTO changes (action, row_primary_key_column, row_primary_key_value, field, old_data, new_data, fork_id, table_name, created_at) VALUES (:action, :row_primary_key_column, :row_primary_key_value, :field, :old_data, :new_data, :fork_id, :table_name, :created_at)"
-		vcs.VCSDB.MustExec(query, initchange.Action, initchange.RowPrimaryKeyColumn, initchange.RowPrimaryKeyValue, initchange.Field, initchange.OldData, initchange.NewData, initchange.ForkID, initchange.TableName, initchange.CreatedAt)
-	}
-
 	// Check if the initial fork exists
 	var fork Fork
-	err = vcs.VCSDB.Get(&fork, "SELECT * FROM forks WHERE id = 0")
+	err = vcs.VCSDB.Get(&fork, "SELECT * FROM forks WHERE id = 1")
 	// if no rows are returned, create the initial fork
 	if err == sql.ErrNoRows {
 		// Create the initial fork
 		initfork := Fork{
-			ID:        0,
 			ParentID:  sql.NullInt64{Valid: false},
 			Name:      "master",
 			CreatedAt: time.Now(),
@@ -215,6 +191,29 @@ func (vcs *VCS) Initialize(dataDB *sqlx.DB) error {
 		query = "INSERT INTO forks (id, parent_id, name, created_at) VALUES (:id, :parent_id, :name, :created_at)"
 		vcs.VCSDB.MustExec(query, initfork.ID, initfork.ParentID, initfork.Name, initfork.CreatedAt)
 	}
+
+	// Check if the initial change exists
+	var change Change
+	err = vcs.VCSDB.Get(&change, "SELECT * FROM changes WHERE id = 1")
+	// if no rows are returned, create the initial change
+	if err == sql.ErrNoRows {
+		// Create the initial change
+		initchange := Change{
+			Action:              "initialize",
+			RowPrimaryKeyColumn: "",
+			RowPrimaryKeyValue:  "",
+			Field:               "",
+			OldData:             "",
+			NewData:             "",
+			ForkID:              1,
+			TableName:           "",
+			CreatedAt:           time.Now(),
+		}
+
+		query = "INSERT INTO changes (data_action, row_primary_key_column, row_primary_key_value, field, old_data, new_data, fork_id, table_name, created_at) VALUES (:data_action, :row_primary_key_column, :row_primary_key_value, :field, :old_data, :new_data, :fork_id, :table_name, :created_at)"
+		vcs.VCSDB.MustExec(query, initchange.Action, initchange.RowPrimaryKeyColumn, initchange.RowPrimaryKeyValue, initchange.Field, initchange.OldData, initchange.NewData, initchange.ForkID, initchange.TableName, initchange.CreatedAt)
+	}
+
 	return nil
 }
 

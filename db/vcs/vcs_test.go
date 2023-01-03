@@ -44,7 +44,7 @@ func TestInitialization(t *testing.T) {
 		CreatedAt:           time.Now(),
 	}
 	var initchange Change
-	vcs.VCSDB.Get(&initchange, "SELECT * FROM change WHERE id = ?", 0)
+	vcs.VCSDB.Get(&initchange, "SELECT * FROM change WHERE id = ?", 1)
 	initchange.CreatedAt = refchange.CreatedAt
 	if !reflect.DeepEqual(initchange, refchange) {
 		t.Error("The VCS Database is not initialized correctly")
@@ -57,7 +57,7 @@ func TestInitialization(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 	var initfork Fork
-	vcs.VCSDB.Get(&initfork, "SELECT * FROM fork WHERE id = ?", 0)
+	vcs.VCSDB.Get(&initfork, "SELECT * FROM fork WHERE id = ?", 1)
 	if !reflect.DeepEqual(initfork, reffork) {
 		t.Error("The VCS Database is not initialized correctly")
 	}
