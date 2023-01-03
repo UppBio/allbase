@@ -44,11 +44,10 @@ type Change struct {
 }
 
 type Fork struct {
-	ID             int           `db:"id"`
-	ParentID       sql.NullInt64 `db:"parent_id"`
-	Name           string        `db:"name"`
-	CreatedAt      time.Time     `db:"created_at"`
-	ChangeOriginID uint64        `db:"change_origin_id"`
+	ID        int           `db:"id"`
+	ParentID  sql.NullInt64 `db:"parent_id"`
+	Name      string        `db:"name"`
+	CreatedAt time.Time     `db:"created_at"`
 }
 
 type VCSState struct {
@@ -59,54 +58,18 @@ type VCSState struct {
 type Changes []*Change
 
 type VCS struct {
-	SynbioDB *sqlx.DB
 	VCSDB    *sqlx.DB
 	VCSState *VCSState
-}
-
-// Create a connection to VCS Sqlite3 database
-func ConnectVCSDB() (*sqlx.DB, error) {
-	// Get the path to the VCS Sqlite3 database from the environment
-	dbPath, ok := os.LookupEnv("VCS_DB_PATH")
-	if !ok {
-		dbPath = "./vcs.db"
-	}
-
-	// Open a connection to the VCS Sqlite3 database
-	db, err := sqlx.Open("sqlite3", dbPath)
-	if err != nil {
-		return nil, err
-	}
-	return db, nil
-}
-
-// Create a connection to the SynBio Sqlite3 database
-func ConnectSynBioDB() (*sqlx.DB, error) {
-	// Get the path to the SynBio Sqlite3 database from the environment
-	dbPath, ok := os.LookupEnv("SYNBIO_DB_PATH")
-	if !ok {
-		dbPath = "../data/dev/retsynth/minimal.db"
-	}
-
-	// Open a connection to the SynBio Sqlite3 database
-	db, err := sqlx.Open("sqlite3", dbPath)
-	if err != nil {
-		return nil, err
-	}
-	return db, nil
+	DataDB   *sqlx.DB
 }
 
 // Find the existing row in the VCS database
-func findExistingRow(row *Row) *Row {
+func (vcs *VCS) findExistingRow(row *Row) *Row {
 	// Connect to the SynBio Database
-	db, err := ConnectSynBioDB()
-	if err != nil {
-		return nil
-	}
-	defer db.Close()
+	vcsdb := vcs.DataDB
 
 	// Query the Row using the given table
-	rawrow := db.QueryRow("SELECT * FROM ? WHERE ? = ?", row.TableName, row.PrimaryKeyColumn, row.PrimaryKeyValue)
+	rawrow := vcsdb.QueryRow("SELECT * FROM ? WHERE ? = ?", row.TableName, row.PrimaryKeyColumn, row.PrimaryKeyValue)
 
 	// Check if the row exists
 	if rawrow == nil {
@@ -126,15 +89,152 @@ func findExistingRow(row *Row) *Row {
 	return &oldRow
 }
 
+// Get the current state of the VCS database
+func (vcs *VCS) readVCSState() (VCSState, error) {
+	// Read the vcs state from the json file
+	data, err := os.ReadFile("vcs.json")
+	if err != nil {
+		return VCSState{}, err
+	}
+
+	// Unmarshal the json data into a VCSState struct
+	var vcsState VCSState
+	err = json.Unmarshal(data, &vcsState)
+	if err != nil {
+		return VCSState{}, err
+	}
+
+	return vcsState, nil
+}
+
+// Write the VCS state to the vcs.json file
+func (vcs *VCS) writeVCSState(vcsState VCSState) error {
+	// Marshal the VCSState struct into json
+	data, err := json.Marshal(vcsState)
+	if err != nil {
+		return err
+	}
+
+	// Write the json data to the vcs.json file
+	err = os.WriteFile("vcs.json", data, 0644)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Create a connection to VCS Sqlite3 database
+func (vcs *VCS) connectVCSDB() error {
+	// Get the path to the VCS Sqlite3 database from the environment
+	dbPath, ok := os.LookupEnv("VCS_DB_PATH")
+	if !ok {
+		dbPath = "./vcs.db"
+	}
+
+	// Open a connection to the VCS Sqlite3 database
+	db, err := sqlx.Open("sqlite3", dbPath)
+	vcs.VCSDB = db
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (vcs *VCS) Initialize(dataDB *sqlx.DB) error {
+	// Connect to the VCS database
+	err := vcs.connectVCSDB()
+	if err != nil {
+		return err
+	}
+
+	// Assign the dataDB to the VCS struct
+	vcs.DataDB = dataDB
+
+	// Test if the DataDB is connected
+	err = vcs.DataDB.Ping()
+	if err != nil {
+		return err
+	}
+
+	// Create the changes table if it doesn't exist
+	query := `
+	CREATE TABLE IF NOT EXISTS changes (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		action TEXT NOT NULL,
+		row_primary_key_column TEXT NOT NULL,
+		row_primary_key_value TEXT NOT NULL,
+		field TEXT NOT NULL,
+		old_data TEXT NOT NULL,
+		new_data TEXT NOT NULL,
+		fork_id INTEGER NOT NULL,
+		table_name TEXT NOT NULL,
+		created_at DATETIME NOT NULL
+	);`
+
+	vcs.VCSDB.MustExec(query)
+
+	// Create the forks table if it doesn't exist
+	query = `
+	CREATE TABLE IF NOT EXISTS forks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		parent_id INTEGER,
+		name TEXT NOT NULL,
+		created_at DATETIME NOT NULL
+	);`
+	vcs.VCSDB.MustExec(query)
+
+	// Check if the initial change exists
+	var change Change
+	err = vcs.VCSDB.Get(&change, "SELECT * FROM changes WHERE id = 0")
+	// if no rows are returned, create the initial change
+	if err == sql.ErrNoRows {
+		// Create the initial change
+		initchange := Change{
+			ID:                  0,
+			Action:              string(Initialize),
+			RowPrimaryKeyColumn: "",
+			RowPrimaryKeyValue:  "",
+			Field:               "",
+			OldData:             "",
+			NewData:             "",
+			ForkID:              0,
+			TableName:           "",
+			CreatedAt:           time.Now(),
+		}
+
+		query = "INSERT INTO changes (action, row_primary_key_column, row_primary_key_value, field, old_data, new_data, fork_id, table_name, created_at) VALUES (:action, :row_primary_key_column, :row_primary_key_value, :field, :old_data, :new_data, :fork_id, :table_name, :created_at)"
+		vcs.VCSDB.MustExec(query, initchange.Action, initchange.RowPrimaryKeyColumn, initchange.RowPrimaryKeyValue, initchange.Field, initchange.OldData, initchange.NewData, initchange.ForkID, initchange.TableName, initchange.CreatedAt)
+	}
+
+	// Check if the initial fork exists
+	var fork Fork
+	err = vcs.VCSDB.Get(&fork, "SELECT * FROM forks WHERE id = 0")
+	// if no rows are returned, create the initial fork
+	if err == sql.ErrNoRows {
+		// Create the initial fork
+		initfork := Fork{
+			ID:        0,
+			ParentID:  sql.NullInt64{Valid: false},
+			Name:      "master",
+			CreatedAt: time.Now(),
+		}
+
+		query = "INSERT INTO forks (id, parent_id, name, created_at) VALUES (:id, :parent_id, :name, :created_at)"
+		vcs.VCSDB.MustExec(query, initfork.ID, initfork.ParentID, initfork.Name, initfork.CreatedAt)
+	}
+	return nil
+}
+
 // Generate a list of changes made to the data given the rows that we are making changes to the data (CREATE, UPDATE)
-func TrackChanges(data []*Row, deletedData []*Row) (Changes, error) {
+func (vcs *VCS) TrackChanges(data []*Row, deletedData []*Row) (Changes, error) {
 	// Initialize a list of changes to track the changes made to the data
 	changes := Changes{}
 
 	// Iterate through the rows in the current state of the data
 	for _, currentRow := range data {
 		// Check if the current row exists in the previous state of the data
-		previousRow := findExistingRow(currentRow)
+		previousRow := vcs.findExistingRow(currentRow)
 
 		// If the current row does not exist in the previous state, it has been added
 		if previousRow == nil {
@@ -175,7 +275,7 @@ func TrackChanges(data []*Row, deletedData []*Row) (Changes, error) {
 	// Iterate through the deleted rows and generate a list of changes
 	for _, deletedRow := range deletedData {
 		// Check if the deleted row exists in the previous state of the data
-		previousRow := findExistingRow(deletedRow)
+		previousRow := vcs.findExistingRow(deletedRow)
 		// If the deleted row does not exist, its an error
 		if previousRow == nil {
 			errormessage := fmt.Sprintf("deleted row in table: %s with primary key (%s) and field %s does not exist", deletedRow.TableName, deletedRow.PrimaryKeyValue, deletedRow.PrimaryKeyColumn)
@@ -212,18 +312,18 @@ func TrackChanges(data []*Row, deletedData []*Row) (Changes, error) {
 }
 
 // Get the changes made to the data for a given fork
-func GetChanges(forkID int) ([]Change, error) {
+func (vcs *VCS) GetChanges(forkID int) ([]Change, error) {
 	// Connect to the VCS Database
-	db, err := ConnectVCSDB()
-	if err != nil {
-		return nil, err
+	if vcs.VCSDB == nil {
+		err := vcs.connectVCSDB()
+		if err != nil {
+			return nil, err
+		}
 	}
-	defer db.Close()
-
 	// Construct sqlx query to get all changes for a given fork
 	query := "SELECT * FROM changes WHERE fork_id = ?"
 	var changes []Change
-	err = db.Select(&changes, query, forkID)
+	err := vcs.VCSDB.Select(&changes, query, forkID)
 	if err != nil {
 		return nil, err
 	}
@@ -232,9 +332,9 @@ func GetChanges(forkID int) ([]Change, error) {
 }
 
 // Rollback the changes made to the data to a given index in the list of changes
-func RollbackTo(changeID int, forkID int) error {
+func (vcs *VCS) RollbackTo(changeID int, forkID int) error {
 	// Get the list of changes made to the data in the VCS database for the given fork
-	changes, err := GetChanges(forkID)
+	changes, err := vcs.GetChanges(forkID)
 	if err != nil {
 		return err
 	}
@@ -244,12 +344,9 @@ func RollbackTo(changeID int, forkID int) error {
 	}
 
 	// Connect to the SynBio Database
-	db, err := ConnectSynBioDB()
-	if err != nil {
-		return err
-	}
+	vcsdb := vcs.DataDB
 
-	tx, err := db.Begin()
+	tx, err := vcsdb.Begin()
 	if err != nil {
 		return err
 	}
@@ -278,56 +375,21 @@ func RollbackTo(changeID int, forkID int) error {
 	return tx.Commit()
 }
 
-// Get the current state of the VCS database
-func ReadVCSState() (VCSState, error) {
-	// Read the vcs state from the json file
-	data, err := os.ReadFile("vcs.json")
-	if err != nil {
-		return VCSState{}, err
-	}
-
-	// Unmarshal the json data into a VCSState struct
-	var vcsState VCSState
-	err = json.Unmarshal(data, &vcsState)
-	if err != nil {
-		return VCSState{}, err
-	}
-
-	return vcsState, nil
-}
-
-// Write the VCS state to the vcs.json file
-func WriteVCSState(vcsState VCSState) error {
-	// Marshal the VCSState struct into json
-	data, err := json.Marshal(vcsState)
-	if err != nil {
-		return err
-	}
-
-	// Write the json data to the vcs.json file
-	err = os.WriteFile("vcs.json", data, 0644)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // Create a fork and return the ID of the fork
-func CreateFork(forkname string) (uint64, error) {
+func (vcs *VCS) CreateFork(forkname string) (uint64, error) {
 
 	//Read the vcs state of the database
-	data, err := ReadVCSState()
+	data, err := vcs.readVCSState()
 	if err != nil {
 		return 0, err
 	}
 
 	// Connect to the VCS Database
-	db, err := ConnectVCSDB()
+	vcsdb := vcs.VCSDB
 	if err != nil {
 		return 0, err
 	}
-	result, err := db.Exec("INSERT INTO forks (name, parent_id, created_at, change_origin_id) VALUES (?, ?, ?, ?)", forkname, data.CurrentForkID, time.Now(), data.CurrentChangeID)
+	result, err := vcsdb.Exec("INSERT INTO forks (name, parent_id, created_at, change_origin_id) VALUES (?, ?, ?, ?)", forkname, data.CurrentForkID, time.Now(), data.CurrentChangeID)
 	if err != nil {
 		return 0, err
 	}
